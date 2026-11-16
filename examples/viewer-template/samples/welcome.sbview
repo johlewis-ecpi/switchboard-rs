@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "title": "Quarterly project review",
+  "description": "A read-only sample report. Search the rows or toggle wrapping. All content stays local.",
+  "columns": [
+    {"key": "project", "label": "Project"},
+    {"key": "owner", "label": "Owner"},
+    {"key": "status", "label": "Status"},
+    {"key": "complete", "label": "Complete (%)"}
+  ],
+  "rows": [
+    {"project": "Library migration", "owner": "Alex", "status": "In progress", "complete": 65},
+    {"project": "Viewer packages", "owner": "Sam", "status": "Ready for review", "complete": 90},
+    {"project": "Accessibility review", "owner": "Renée", "status": "Planned ✓", "complete": 0}
+  ]
+}

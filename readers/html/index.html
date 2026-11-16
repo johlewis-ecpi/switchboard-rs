@@ -1,0 +1,33 @@
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HTML Viewer</title><style>
+:root{font:13px -apple-system,BlinkMacSystemFont,sans-serif;color-scheme:light dark}*{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;background:Canvas;color:CanvasText}nav{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:9px 14px;border-bottom:1px solid #8884}button{font:inherit;padding:5px 12px;border:1px solid #8885;border-radius:6px;background:Canvas;color:CanvasText;cursor:pointer}button[aria-pressed=true]{background:Highlight;color:HighlightText}button:focus-visible{outline:2px solid Highlight;outline-offset:2px}small{margin-left:auto;opacity:.7}#content{flex:1;min-height:0;display:flex}iframe{flex:1;width:100%;height:100%;border:0;background:white}pre{margin:0;padding:20px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,Menlo,monospace;user-select:text}[hidden]{display:none!important}
+</style></head><body><nav aria-label="HTML display"><button id="page" aria-pressed="true">Page</button><button id="source" aria-pressed="false">Source</button><small>Self-contained HTML preview</small></nav><main id="content"><p role="status">Waiting for a document…</p></main><pre id="code" hidden aria-label="HTML source" tabindex="0"></pre><script>
+'use strict';
+// Document scripts run in a second opaque-origin frame, separate from this
+// trusted protocol bridge. This capability is granted only to the bundled HTML
+// reader by the host; ordinary installed packages cannot create child frames.
+const content=document.getElementById('content'),code=document.getElementById('code');
+const pageButton=document.getElementById('page'),sourceButton=document.getElementById('source');
+const policy="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
+let request=-1,documentFrame=null;
+function display(source){content.hidden=source;code.hidden=!source;pageButton.setAttribute('aria-pressed',String(!source));sourceButton.setAttribute('aria-pressed',String(source));}
+pageButton.addEventListener('click',()=>display(false));sourceButton.addEventListener('click',()=>display(true));
+window.addEventListener('message',event=>{
+  const message=event.data;
+  if(event.source!==parent||message?.type!=='switchboard:open'||message.apiVersion!==1||!Number.isSafeInteger(message.request)||message.request<0||message.request<=request)return;
+  request=message.request;const current=request;code.textContent='';display(false);
+  try{
+    const doc=message.document;
+    if(!doc||doc.readOnly!==true||typeof doc.text!=='string'||!['html','htm','xhtml'].includes(String(doc.extension).toLowerCase()))throw Error('Expected a read-only HTML document');
+    code.textContent=doc.text;display(false);
+    const frame=document.createElement('iframe');frame.title=typeof doc.name==='string'?doc.name:'HTML document';
+    frame.setAttribute('sandbox','allow-scripts');frame.referrerPolicy='no-referrer';
+    frame.addEventListener('load',()=>{if(request===current&&documentFrame===frame)parent.postMessage({type:'switchboard:rendered',apiVersion:1,request:current},'*');},{once:true});
+    frame.srcdoc='<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="'+policy+'">'+doc.text;
+    documentFrame=frame;content.replaceChildren(frame);
+  }catch(error){
+    documentFrame=null;content.replaceChildren();const text=document.createElement('p');text.setAttribute('role','alert');text.textContent=String(error.message||'Could not display HTML').slice(0,2000);content.append(text);
+    parent.postMessage({type:'switchboard:error',apiVersion:1,request:current,message:text.textContent},'*');
+  }
+});
+parent.postMessage({type:'switchboard:ready',apiVersion:1},'*');
+</script></body></html>

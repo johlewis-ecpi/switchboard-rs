@@ -1,0 +1,13 @@
+<html lang="en"><head><meta charset="utf-8"><style>
+:root{font:13px -apple-system,BlinkMacSystemFont,sans-serif;color-scheme:light dark}body{margin:0}label{display:block;padding:10px 20px;border-bottom:1px solid #8884}pre{margin:0;padding:20px;tab-size:4;font:13px/1.65 ui-monospace,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}pre.nowrap{white-space:pre;overflow-wrap:normal}
+</style></head><body><label><input id="wrap" type="checkbox" checked> Wrap lines</label><pre id="content" tabindex="0"></pre><script>
+'use strict';
+window.addEventListener('message',event=>{
+  if(event.source!==parent||event.data?.type!=='switchboard:open'||event.data.apiVersion!==1)return;
+  document.getElementById('content').textContent=event.data.document.text??'';
+  document.getElementById('content').focus();
+  parent.postMessage({type:'switchboard:rendered',apiVersion:1,request:event.data.request},'*');
+});
+document.getElementById('wrap').addEventListener('change',event=>document.getElementById('content').classList.toggle('nowrap',!event.target.checked));
+parent.postMessage({type:'switchboard:ready',apiVersion:1},'*');
+</script></body></html>

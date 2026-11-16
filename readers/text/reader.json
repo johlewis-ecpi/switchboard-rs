@@ -1,0 +1,7 @@
+{
+  "apiVersion": 1,
+  "id": "switchboard.text",
+  "name": "Text / Code",
+  "extensions": [],
+  "entry": "index.html"
+}
