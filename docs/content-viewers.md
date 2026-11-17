@@ -8,6 +8,14 @@ Space also closes from installed reader frames and HTML document content; typing
 in text fields and activating buttons/media controls keeps normal behavior.
 Repeated or modified Space key events do not toggle the viewer. Ordinary Open behavior is unchanged.
 
+Opening a cloud-only file (including OneDrive files) allows macOS to download
+its contents for this preview. Native documents are fetched on a worker before
+Quick Look is attached; text and package readers fetch through their background
+reads. The preview stays in its loading state while the provider responds. The
+cloud provider must be running, signed in, and able to retrieve the file. Mounted
+remote volumes remain excluded. Content search still skips cloud placeholders
+and never enables downloading. Path checks on the UI thread remain metadata-only.
+
 ## Current adapters
 
 | Content | Adapter | Status |

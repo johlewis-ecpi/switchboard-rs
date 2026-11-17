@@ -110,3 +110,135 @@ pub fn build() -> NativeMenu {
         focused_items,
     }
 }
+
+/// Per-window menu IDs keep selections tied to the window that opened the menu.
+pub struct EntryMenu {
+    menu: Menu,
+    actions: std::collections::HashMap<String, String>,
+}
+
+fn entry_actions(
+    kind: switchboard::model::Kind,
+    favorite: bool,
+    reorder: bool,
+) -> Vec<(&'static str, &'static str)> {
+    use switchboard::model::Kind;
+    let mut actions = vec![("open", "Open")];
+    if kind == Kind::File {
+        actions.push(("viewDocument", "View in App"));
+    }
+    if kind != Kind::Url {
+        actions.push(("reveal", "Show in Finder"));
+    }
+    actions.extend([
+        ("copy", "Copy Location"),
+        (
+            "favorite",
+            if favorite {
+                "Remove Favorite"
+            } else {
+                "Favorite"
+            },
+        ),
+        ("organize", "Move / tags…"),
+        ("clearCollection", "Remove from Collection"),
+    ]);
+    if reorder {
+        actions.extend([("earlier", "Move Earlier"), ("later", "Move Later")]);
+    }
+    actions.extend([
+        ("show", "Show in Switchboard"),
+        ("remove", "Remove from Library…"),
+    ]);
+    actions
+}
+
+impl EntryMenu {
+    pub fn new(entry: &switchboard::model::Entry, reorder: bool) -> Result<Self, String> {
+        let menu = Menu::new();
+        let token = uuid::Uuid::new_v4();
+        let mut actions = std::collections::HashMap::new();
+        for (action, title) in entry_actions(entry.kind, entry.favorite, reorder) {
+            let id = format!("context:{token}:{action}");
+            menu.append(&MenuItem::with_id(&id, title, true, None))
+                .map_err(|e| e.to_string())?;
+            actions.insert(id, action.to_owned());
+        }
+        Ok(Self { menu, actions })
+    }
+
+    pub fn action(&self, id: &str) -> Option<&str> {
+        self.actions.get(id).map(String::as_str)
+    }
+
+    pub fn show(&self, window: &tao::window::Window, x: f64, y: f64) {
+        use muda::{ContextMenu, dpi::LogicalPosition};
+        let position = Some(LogicalPosition::new(x, y).into());
+        #[cfg(target_os = "macos")]
+        {
+            use objc2_app_kit::NSWindow;
+            use tao::platform::macos::WindowExtMacOS;
+            let native = unsafe { &*(window.ns_window() as *const NSWindow) };
+            // Wry replaces tao's original view; anchor to the installed content view.
+            if let Some(view) = native.contentView() {
+                unsafe {
+                    self.menu.show_context_menu_for_nsview(
+                        (&*view as *const objc2_app_kit::NSView).cast(),
+                        position,
+                    );
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use tao::platform::windows::WindowExtWindows;
+            unsafe {
+                self.menu
+                    .show_context_menu_for_hwnd(window.hwnd(), position);
+            }
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use tao::platform::unix::WindowExtUnix;
+            self.menu
+                .show_context_menu_for_gtk_window(window.gtk_window(), position);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::entry_actions;
+    use switchboard::model::Kind;
+
+    #[test]
+    fn minimal_context_menu_keeps_all_actions() {
+        let actions = entry_actions(Kind::File, false, true);
+        assert_eq!(actions.len(), 11);
+        assert!(actions.contains(&("viewDocument", "View in App")));
+        assert!(actions.contains(&("earlier", "Move Earlier")));
+        assert!(actions.contains(&("later", "Move Later")));
+        assert_eq!(actions.last(), Some(&("remove", "Remove from Library…")));
+    }
+
+    #[test]
+    fn context_menu_matches_kind_favorite_and_ordering() {
+        for kind in [Kind::File, Kind::Folder, Kind::Url] {
+            let actions = entry_actions(kind, true, false);
+            assert_eq!(
+                actions.iter().any(|(action, _)| *action == "viewDocument"),
+                kind == Kind::File
+            );
+            assert_eq!(
+                actions.iter().any(|(action, _)| *action == "reveal"),
+                kind != Kind::Url
+            );
+            assert!(actions.contains(&("favorite", "Remove Favorite")));
+            assert!(
+                !actions
+                    .iter()
+                    .any(|(action, _)| matches!(*action, "earlier" | "later"))
+            );
+        }
+    }
+}

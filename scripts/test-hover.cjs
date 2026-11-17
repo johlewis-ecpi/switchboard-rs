@@ -9,7 +9,7 @@ const handlers = {};
 const surface = name => ({addEventListener: (event, fn) => { handlers[name + ':' + event] = fn; }});
 const content = surface('content'), document = surface('document'), window = surface('window');
 const classes = new Set(['hidden']);
-const hover = {dataset: {}, style: {}, classList: {add: c => classes.add(c), remove: c => classes.delete(c)}};
+const hover = {dataset: {}, style: {}, classList: {add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c)}};
 const entry = {id: 'one', name: 'Example', kind: 'file', location: '/tmp/example', tags: [], added: 0};
 let now = 0, sequence = 0;
 const timers = new Map(), requests = [];
@@ -122,3 +122,45 @@ for (let session = 0; session < 2; session++) {
   assert(icons[0].icon.innerHTML.includes('native-word'));
 }
 console.log('Thumbnail icon checks passed: fresh sessions, eager loading, async replacement, apps/folders, and display modes.');
+
+// Desktop hover content goes to a passive native window in screen space.
+context.window.switchboardNativeHover = true;
+hover.innerHTML = '<strong>Example</strong><p>Details</p>';
+requests.length = 0;
+context.positionHover(100, 90);
+assert.equal(hover.style.visibility, 'hidden', 'the embedded card cannot flicker or clip inside the small library');
+assert.equal(requests[0][0], 'showHover');
+assert.equal(requests[0][1].html, hover.innerHTML);
+assert.equal(requests[0][1].x, 100);
+assert.equal(requests[0][1].y, 90);
+context.hideHover();
+assert.equal(requests.at(-1)[0], 'hideHover');
+const countAfterHide = requests.length;
+vm.runInContext(script.slice(script.indexOf('function receivePreview('), script.indexOf('function positionHover(')), context);
+context.receiveIcons = () => {};
+context.receivePreview({id:'one',preview:{image:'late-image'}});
+assert.equal(requests.length, countAfterHide, 'late thumbnails cannot reopen a dismissed native hover');
+
+// The popup measures its own content rather than the library viewport, including late images.
+const popupHtml = fs.readFileSync(require('node:path').join(__dirname, '../src/hover.html'), 'utf8');
+const popupScript = popupHtml.match(/<script>([\s\S]*)<\/script>/)[1];
+const messages = [], popupEvents = {};
+let popupHeight = 500, resized;
+const popupElement = {innerHTML:'', getBoundingClientRect:()=>({height:popupHeight}), addEventListener:(type,fn)=>popupEvents[type]=fn};
+const popupContext = vm.createContext({
+  document:{body:{className:''}, getElementById:()=>popupElement},
+  window:{ipc:{postMessage:message=>messages.push(JSON.parse(message))}},
+  ResizeObserver:class {constructor(fn){resized=fn} observe(){}},
+});
+vm.runInContext(popupScript, popupContext);
+assert.deepEqual(messages.shift(), {ready:true});
+popupContext.window.receiveHover({revision:7, appearance:'dark', html:'<p>Independent popup</p>'});
+assert.equal(popupContext.document.body.className, 'dark');
+assert.equal(popupElement.innerHTML, '<p>Independent popup</p>');
+assert.deepEqual(messages.at(-1), {revision:7, height:500});
+popupHeight=650; popupEvents.load();
+assert.deepEqual(messages.at(-1), {revision:7, height:650});
+popupContext.window.receiveHover({revision:8, appearance:'system', html:'<p>New file</p>'});
+resized();
+assert.equal(messages.at(-1).revision, 8, 'measurements identify the current hover');
+console.log('Native hover checks passed: independent content, dismissal, late reply isolation, theme, content sizing, and image resize.');

@@ -14,7 +14,7 @@ function viewDocument(id = selected()[0]) {
 }
 function createDocumentViewer(name, id = null, request = ++viewerSequence) {
   hideHover();
-  modal('Content viewer', '<p role="status">Loading document…</p>', '', true);
+  modal('Content viewer', '<p role="status">Loading document… Cloud files may need to download.</p>', '', true);
   documentViewer = {id, request, name};
   const modalElement = $('#dialogs .modal');
   modalElement.classList.add('document-viewer');

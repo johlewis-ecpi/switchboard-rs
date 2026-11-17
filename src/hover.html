@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<style>/* SHARED_STYLE */
+body{background:var(--panel)}
+#hover{position:static;width:100%;max-width:none;max-height:none;box-shadow:none;overflow-wrap:anywhere}
+</style></head><body class="system"><div id="hover"></div>
+<script>
+let revision = 0;
+const hover = document.getElementById('hover');
+function measure() {
+  if (revision) window.ipc.postMessage(JSON.stringify({revision, height:hover.getBoundingClientRect().height}));
+}
+window.receiveHover = value => {
+  revision = value.revision;
+  document.body.className = value.appearance;
+  hover.innerHTML = value.html;
+  measure();
+};
+new ResizeObserver(measure).observe(hover);
+hover.addEventListener('load', measure, true);
+window.ipc.postMessage(JSON.stringify({ready:true}));
+</script></body></html>

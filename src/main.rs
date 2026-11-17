@@ -1,3 +1,4 @@
+mod hover_popup;
 mod menu;
 mod native_viewer;
 mod platform;
@@ -37,6 +38,8 @@ enum Message {
     Opened(WindowId, u64, Vec<(Entry, Result<String>)>),
     Magnify(WindowId, f64, bool),
     DismissViewer(WindowId),
+    HoverReady(WindowId),
+    HoverSize(WindowId, u64, f64),
     Command(WindowId, Value),
     Drop(WindowId, Vec<PathBuf>),
     Content(WindowId, u64, Entry, ContentResult),
@@ -55,6 +58,8 @@ struct ViewerTest {
 }
 
 struct Shell {
+    hover_popup: Option<hover_popup::HoverPopup>,
+    context_menu: Option<menu::EntryMenu>,
     viewer_test: Option<ViewerTest>,
     native_viewer: native_viewer::NativeViewer,
     viewer_request: u64,
@@ -114,7 +119,10 @@ fn create(
     if preview.is_some() {
         platform::place_preview(&window);
         window.set_title("Switchboard — Preview");
-    } else if !launcher {
+    } else if !launcher
+        && !std::env::args()
+            .any(|arg| matches!(arg.as_str(), "--smoke-test" | "--hover-smoke-test"))
+    {
         platform::restore_library_window_frame(&window);
     }
     let id = window.id();
@@ -133,8 +141,8 @@ fn create(
         token = json!(bridge_token)
     );
     let webview = WebViewBuilder::new()
-        .with_initialization_script(&format!(
-            "window.switchboardPreviewWindow = {};",
+        .with_initialization_script(format!(
+            "window.switchboardNativeContextMenu = true; window.switchboardNativeHover = true; window.switchboardPreviewWindow = {};",
             preview.is_some()
         ))
         .with_initialization_script(&bridge_script)
@@ -175,6 +183,8 @@ fn create(
         window.set_visible(true);
     }
     Shell {
+        hover_popup: None,
+        context_menu: None,
         viewer_test: None,
         native_viewer: native_viewer::NativeViewer::default(),
         viewer_request: 0,
@@ -1173,7 +1183,12 @@ fn main() {
     );
     let launcher_id = launcher.window.id();
     windows.insert(launcher_id, launcher);
+    let mut hover_smoke_complete = false;
     event_loop.run(move |event, target, flow| {
+        if hover_smoke_complete {
+            *flow = ControlFlow::Exit;
+            return;
+        }
         let _ = &native_menu.menu;
         let focused = windows
             .values()
@@ -1183,6 +1198,30 @@ fn main() {
         }
         *flow = ControlFlow::Wait;
         match event {
+            Event::UserEvent(Message::HoverReady(id)) => {
+                if let Some(s) = windows.get_mut(&id) && let Some(popup) = &mut s.hover_popup {
+                    popup.ready();
+                }
+            }
+            Event::UserEvent(Message::HoverSize(id, revision, height)) => {
+                if let Some(s) = windows.get(&id)
+                    && s.window.is_visible() && s.window.is_focused()
+                    && let Some(popup) = &s.hover_popup
+                {
+                    popup.resize(&s.window, revision, height);
+                }
+                if std::env::args().any(|a| a == "--hover-smoke-test")
+                    && let Some(s) = windows.get_mut(&id)
+                    && let Some(popup) = &mut s.hover_popup
+                {
+                    match popup.verify_smoke_test(&s.window) {
+                        Ok(()) => println!("Native hover smoke test: screen-sized popup exceeds small library bounds, retains library focus, and ignores measurements after dismissal"),
+                        Err(error) => { eprintln!("Native hover smoke test failed: {error}"); std::process::exit(1); }
+                    }
+                    hover_smoke_complete = true;
+                    *flow = ControlFlow::Exit;
+                }
+            }
             Event::UserEvent(Message::DismissViewer(id)) => {
                 if let Some(shell) = windows.get(&id) && shell.viewer_entry.is_some() {
                     shell.eval("closeDialog", &Value::Null);
@@ -1198,6 +1237,16 @@ fn main() {
                 }
             }
             Event::UserEvent(Message::Menu(action)) => {
+                let context_action = windows.iter().find_map(|(id, s)| {
+                    s.context_menu.as_ref()?.action(&action).map(|action| (*id, action.to_owned()))
+                });
+                if let Some((id, action)) = context_action {
+                    let s = windows.get_mut(&id).unwrap();
+                    s.context_menu = None;
+                    s.eval("invokeContextAction", &json!(action));
+                    return;
+                }
+
                 if action == "quit" {
                     *flow = ControlFlow::Exit;
                     return;
@@ -1291,6 +1340,48 @@ fn main() {
                     }
                     return;
                 }
+                if action == "contextMenu" {
+                    if let Some(s) = windows.get_mut(&id)
+                        && s.preview_owner.is_none()
+                        && let Ok(entry_id) = Uuid::parse_str(strv(&v, "id"))
+                        && let Some(entry) = store.data.entries.iter().find(|e| e.id == entry_id)
+                        && let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64())
+                        && x.is_finite() && y.is_finite()
+                    {
+                        if let Some(popup) = &mut s.hover_popup { popup.hide(); }
+                        let reorder = s.state.minimal && !matches!(s.state.scope.as_str(), "recent" | "frequent");
+                        match menu::EntryMenu::new(entry, reorder) {
+                            Ok(menu) => {
+                                s.context_menu = Some(menu);
+                                s.context_menu.as_ref().unwrap().show(&s.window, x, y);
+                            }
+                            Err(error) => s.eval("toast", &json!(error)),
+                        }
+                    }
+                    return;
+                }
+                if action == "showHover" || action == "hideHover" {
+                    if let Some(s) = windows.get_mut(&id) {
+                        if action == "hideHover" {
+                            if let Some(popup) = &mut s.hover_popup { popup.hide(); }
+                        } else if !s.launcher && s.preview_owner.is_none()
+                            && s.window.is_visible() && s.window.is_focused()
+                            && let (Some(x), Some(y), Some(html)) = (v["x"].as_f64(), v["y"].as_f64(), v["html"].as_str())
+                            && x.is_finite() && y.is_finite()
+                        {
+                            if s.hover_popup.is_none() {
+                                match hover_popup::HoverPopup::new(target, proxy.clone(), id) {
+                                    Ok(popup) => s.hover_popup = Some(popup),
+                                    Err(error) => s.eval("toast", &json!(error)),
+                                }
+                            }
+                            if let Some(popup) = &mut s.hover_popup {
+                                popup.show(html, &store.data.appearance, [x, y]);
+                            }
+                        }
+                    }
+                    return;
+                }
                 if action == "openViewerWindow" {
                     if let Some(owner) = windows.get(&id)
                         && owner.preview_owner.is_none()
@@ -1350,6 +1441,15 @@ fn main() {
                     }
                     if action == "ready" && let Some(entry) = s.pending_preview.take() {
                         s.eval("viewDocument", &json!(entry));
+                    }
+                    if action == "ready" && !s.launcher && s.preview_owner.is_none()
+                        && std::env::args().any(|a| a == "--hover-smoke-test")
+                    {
+                        s.state.minimal = true;
+                        s.window.set_inner_size(LogicalSize::new(240., 120.));
+                        publish(&store, &mut s);
+                        // Let native resizing finish before simulating a delayed icon hover.
+                        let _ = s.webview.evaluate_script("requestAnimationFrame(()=>requestAnimationFrame(()=>{const hover=document.querySelector('#hover');hover.innerHTML='<strong>Hover smoke fixture</strong><div style=\"height:480px\">Document preview</div>';hover.dataset.x=50;hover.dataset.y=50;hover.classList.remove('hidden');positionHover(50,50)}))");
                     }
                     if action == "ready"
                         && s.preview_owner.is_none()
@@ -1513,10 +1613,11 @@ fn main() {
                 window_id,
                 ..
             } => {
-                if let Some(s) = windows.get(&window_id)
-                    && !s.launcher && s.preview_owner.is_none()
-                {
-                    platform::save_library_window_frame(&s.window);
+                if let Some(s) = windows.get_mut(&window_id) {
+                    if let Some(popup) = &mut s.hover_popup { popup.hide(); }
+                    if !s.launcher && s.preview_owner.is_none() {
+                        platform::save_library_window_frame(&s.window);
+                    }
                 }
             }
             Event::WindowEvent {
@@ -1529,7 +1630,8 @@ fn main() {
                     if let Some(s) = windows.get(&owner) {
                         s.window.set_focus();
                     }
-                } else if let Some(s) = windows.get(&window_id) {
+                } else if let Some(s) = windows.get_mut(&window_id) {
+                    if let Some(popup) = &mut s.hover_popup { popup.hide(); }
                     if !s.launcher {
                         platform::save_library_window_frame(&s.window);
                     }
@@ -1543,6 +1645,7 @@ fn main() {
                 ..
             } => {
                 if let Some(s) = windows.get_mut(&window_id) {
+                    if !focused && let Some(popup) = &mut s.hover_popup { popup.hide(); }
                     if s.launcher && !focused {
                         s.window.set_visible(false)
                     } else if focused {

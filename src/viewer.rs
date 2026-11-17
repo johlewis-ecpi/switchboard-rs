@@ -125,16 +125,52 @@ pub fn path(entry: &Entry) -> Result<PathBuf> {
         return Err("Select a local file to view".into());
     }
     let path = PathBuf::from(services::resolve(entry));
-    services::local_safe(&path)?;
     if !path.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("Only regular files can be viewed".into());
     }
+    // Explicit viewing may download a cloud file on a local File Provider volume.
+    // Keep this metadata-only: layout and range dispatch also resolve this path
+    // on the UI thread. Materialization belongs to the background read below.
+    services::local_volume(&path)?;
     Ok(path)
+}
+
+#[cfg(target_os = "macos")]
+fn with_download<T>(read: impl FnOnce() -> Result<T>) -> Result<T> {
+    unsafe extern "C" {
+        fn getiopolicy_np(kind: i32, scope: i32) -> i32;
+        fn setiopolicy_np(kind: i32, scope: i32, policy: i32) -> i32;
+    }
+    // sys/resource.h: VFS_MATERIALIZE_DATALESS_FILES, SCOPE_THREAD, and ON.
+    // Change only the worker thread, then restore even on an error or unwind.
+    struct Restore(i32);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            unsafe { setiopolicy_np(3, 1, self.0) };
+        }
+    }
+    let previous = unsafe { getiopolicy_np(3, 1) };
+    if previous < 0 || unsafe { setiopolicy_np(3, 1, 2) } < 0 {
+        return Err("Could not enable cloud file downloads for this preview".into());
+    }
+    let _restore = Restore(previous);
+    read()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn with_download<T>(read: impl FnOnce() -> Result<T>) -> Result<T> {
+    read()
 }
 
 /// Read exactly `length` bytes at `offset` from a regular file, for API v2 readers.
 /// Bounds are checked against the file's current length, so a shrinking file is an error, not a short read.
 pub fn read_range(path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
+    // A provider can evict the file after initial load. Range reads may fetch it
+    // again, but must never enable downloading on the UI or search threads.
+    with_download(|| read_range_from(path, offset, length))
+}
+
+fn read_range_from(path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
     use std::os::unix::fs::FileExt;
     if length > MAX_RANGE_BYTES {
         return Err(format!(
@@ -165,6 +201,10 @@ pub fn load(entry: &Entry) -> Result<Document> {
 }
 
 fn load_from(path: &Path, readers: &Path) -> Result<Document> {
+    with_download(|| load_downloadable(path, readers))
+}
+
+fn load_downloadable(path: &Path, readers: &Path) -> Result<Document> {
     let extension = path
         .extension()
         .unwrap_or_default()
@@ -182,6 +222,16 @@ fn load_from(path: &Path, readers: &Path) -> Result<Document> {
         );
     if native && !registry.is_enabled("builtin:native")? {
         return Err("The native document viewer is disabled in Settings → Viewers".into());
+    }
+    if native {
+        // Quick Look is attached on the UI thread. Touch the contents here first
+        // so cloud retrieval happens while the preview shows its loading state.
+        let _ = read_range_from(
+            path,
+            0,
+            path.metadata().map_err(|e| e.to_string())?.len().min(1),
+        )
+        .map_err(|error| format!("Could not download or read the file for preview: {error}"))?;
     }
     // API v2 readers pull byte ranges on demand, so no size cap or decoding applies.
     let ranged = reader
@@ -252,6 +302,53 @@ pub(crate) fn bundled_readers() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn viewer_reads_restore_the_threads_non_downloading_policy() {
+        // Use a dedicated thread, as content search does. A viewer read must
+        // override its policy temporarily without weakening subsequent search.
+        std::thread::spawn(|| {
+            unsafe extern "C" {
+                fn getiopolicy_np(kind: i32, scope: i32) -> i32;
+                fn setiopolicy_np(kind: i32, scope: i32, policy: i32) -> i32;
+            }
+            assert_eq!(unsafe { setiopolicy_np(3, 1, 1) }, 0);
+            let temp = tempfile::tempdir().unwrap();
+            let file = temp.path().join("document.txt");
+            fs::write(&file, "preview").unwrap();
+            let result = with_download(|| {
+                assert_eq!(unsafe { getiopolicy_np(3, 1) }, 2);
+                read_range(&file, 0, 7)
+            });
+            assert_eq!(result.unwrap(), b"preview");
+            assert_eq!(unsafe { getiopolicy_np(3, 1) }, 1);
+            assert!(read_range(&file, 0, 8).is_err());
+            assert_eq!(unsafe { getiopolicy_np(3, 1) }, 1);
+            assert!(load_from(&file, &temp.path().join("readers")).is_ok());
+            assert_eq!(unsafe { getiopolicy_np(3, 1) }, 1);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn viewer_paths_check_file_kind_and_volume_without_reading_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("document.txt");
+        fs::write(&file, "preview").unwrap();
+        let mut entry = services::local_entry(&file, None).unwrap();
+        assert_eq!(path(&entry).unwrap(), file.canonicalize().unwrap());
+        entry.kind = Kind::Url;
+        assert!(path(&entry).unwrap_err().contains("local file"));
+        entry.kind = Kind::File;
+        entry.location = temp.path().to_string_lossy().into_owned();
+        entry.bookmark = None;
+        assert!(path(&entry).unwrap_err().contains("regular files"));
+        entry.location = temp.path().join("missing").to_string_lossy().into_owned();
+        assert!(path(&entry).is_err());
+    }
+
     #[test]
     fn html_uses_bundled_page_reader_with_disabled_fallback_and_installed_override() {
         let temp = tempfile::tempdir().unwrap();

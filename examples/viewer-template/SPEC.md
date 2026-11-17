@@ -107,7 +107,7 @@ these requirements; filesystem and case-insensitive rules need extra checks.
 | Source encoding | Valid UTF-8 without NUL bytes, or BOM-marked UTF-16 LE/BE; malformed input is rejected |
 | UTF-8 BOM | May reach the reader as leading U+FEFF; the sample parser accepts it |
 | Metadata | Display `name` and extension without a dot; no file path, directory URL, bookmark or catalog record |
-| Cloud/remote source files | The host's local-file availability rules apply; the reader cannot materialize/download files |
+| Cloud/remote source files | Explicit preview permits the host to fetch cloud-only files through macOS; mounted remote volumes are excluded. Readers receive no direct filesystem or network access. |
 
 `document.text` is decoded text, not base64, an ArrayBuffer or an archive. A web
 reader claiming `docx`, `pptx` or another binary format does not gain binary

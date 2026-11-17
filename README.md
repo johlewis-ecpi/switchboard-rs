@@ -51,6 +51,7 @@ live external reconciliation are outside the source specification.
 - **Recently opened** and **Frequently opened**, in the sidebar and View menu, sort successful opens by time or count. Revealing a file does not count as opening it.
 - Opening a reference shows a Loading indicator on its tile and a status message. It clears when macOS accepts the open request or an error is reported; launching runs in the background so the window stays responsive.
 - Local references show availability badges for available, online-only, missing, and inaccessible files. Details includes **Refresh status** and **Reveal in Finder**; missing references reveal the nearest existing containing folder. Checks use metadata and permissions, without reading document contents.
+- Right-click menus use native screen-level menus, so all actions remain accessible in small Minimal windows.
 - **View in App** (Space) opens a separate preview window at 75% of the primary screen’s width and height, centered on both axes, including from Minimal mode. Close or Space returns focus to the library.
 - Manage readers in **Settings → Viewers**: install packages, inspect validation and last sample-test results, enable/disable readers, or remove installed packages. **Test with Sample** checks startup and lets you visually confirm rendering; changed packages invalidate old results.
 - Select a local file and press **Space**, or choose **View in App**, to open the modular content viewer. Word, PowerPoint, PDF and RTF use an embedded native Quick Look view; HTML renders through a bundled HTML reader with Page/Source controls, and text/code uses a separate reader package. Press Space again to close the viewer; text fields, buttons and media controls keep their normal Space behavior. Markdown, `.mm`, `.gan` and `.drawio` show source until a reader package is installed. See [reader packages and integration status](docs/content-viewers.md).
@@ -85,6 +86,7 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 node scripts/test-hover.cjs
+node scripts/test-context-menu.cjs
 node scripts/test-minimal-zoom.cjs
 node scripts/test-opening.cjs
 node scripts/test-viewer.cjs
@@ -95,12 +97,13 @@ node scripts/test-viewer-keys.cjs
 cargo test --locked --lib -- --include-ignored
 SWITCHBOARD_LIBRARY=/tmp/switchboard-demo/library.json cargo run --locked -- --check
 SWITCHBOARD_LIBRARY=/tmp/switchboard-demo/library.json cargo run --locked -- --smoke-test
+SWITCHBOARD_LIBRARY=/tmp/switchboard-hover-demo/library.json cargo run --locked -- --hover-smoke-test
 ```
 
 Tests use synthetic catalogs and temporary directories. HTTP tests bind loopback
 mock servers and do not contact the public Internet. The native smoke test opens
 a temporary window, exercises all seven normal displays and nine management
-panels, loads the viewer inventory, verifies a sandboxed reader handshake and rendering-completion message, reports the result, and exits. Run it with a separate test catalog.
+panels, loads the viewer inventory, verifies a sandboxed reader handshake and rendering-completion message, reports the result, and exits. The hover smoke test checks that a passive popup exceeds a 240×120 library window without taking focus and stays hidden after dismissal. Run it with a separate test catalog.
 
 ## Implementation boundaries
 
@@ -108,7 +111,7 @@ This is a functioning Rust implementation, with several remaining differences
 from exact Swift UI parity. Track these before treating it as a drop-in migration:
 
 - The launcher uses a floating tao window, rather than an AppKit nonactivating `NSPanel`. It joins Spaces, places itself on the pointer's display, and restores the previous app on Escape/Copy, but exact full-screen and focus behavior needs device testing. macOS system-reserved shortcut inspection is delegated to registration failure, without a separate symbolic-shortcut preflight.
-- Hover details stay inside the webview; they are not independent passive native panels. Document previews use a small embedded Swift helper calling the native QuickLookThumbnailing API, with bounded execution and explicit error reporting. The helper requests document thumbnails rather than file icons, retries local snapshots, and uses independent fallback renderers. Word fallback pagination can differ from Word; PowerPoint needs a saved preview image if both Quick Look attempts fail. Successful previews persist in the thumbnail cache; cancellation rejects late display but does not immediately stop every preview request.
+- Hover details use a separate passive window, sized to their content and positioned within the hovered display’s visible bounds; they can extend beyond a Minimal library window without taking focus or intercepting clicks. Document previews use a small embedded Swift helper calling the native QuickLookThumbnailing API, with bounded execution and explicit error reporting. The helper requests document thumbnails rather than file icons, retries local snapshots, and uses independent fallback renderers. Word fallback pagination can differ from Word; PowerPoint needs a saved preview image if both Quick Look attempts fail. Successful previews persist in the thumbnail cache; cancellation rejects late display but does not immediately stop every preview request.
 - Search uses Unicode case/diacritic folding. macOS name sorting uses Foundation localized standard comparison, and relative dates use the local time zone and system calendar's first weekday. Exact search equivalence across every locale still needs migration testing.
 - Library state is shared across windows; preferences are stored separately as typed JSON rather than UserDefaults. Inspector/sidebar widths differ slightly, and managers use explicit Save Changes rather than autosave on selection changes.
 - The documented JSON forms, optional omissions, dates, enums, sets, action envelopes, and missing-reference behavior have synthetic compatibility tests. The original Swift executable and its fixture suite are absent from this repository, so cross-implementation round-trip parity, including every associated-action spelling, remains unverified.

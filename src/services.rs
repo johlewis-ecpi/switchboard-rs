@@ -172,11 +172,16 @@ pub fn cache_dir() -> PathBuf {
 }
 #[cfg(target_os = "macos")]
 pub(crate) fn local_safe(path: &Path) -> Result<()> {
-    use std::{ffi::CString, os::macos::fs::MetadataExt};
+    use std::os::macos::fs::MetadataExt;
     let m = fs::metadata(path).map_err(|e| e.to_string())?;
     if m.st_flags() & 0x40000000 != 0 {
         return Err("Cloud placeholder; download skipped".into());
     }
+    local_volume(path)
+}
+#[cfg(target_os = "macos")]
+pub(crate) fn local_volume(path: &Path) -> Result<()> {
+    use std::ffi::CString;
     let p = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
     let mut st = std::mem::MaybeUninit::<libc::statfs>::uninit();
     if unsafe { libc::statfs(p.as_ptr(), st.as_mut_ptr()) } != 0 {
@@ -190,6 +195,10 @@ pub(crate) fn local_safe(path: &Path) -> Result<()> {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn local_safe(_: &Path) -> Result<()> {
     Err("Non-downloading file access is currently supported on macOS only".into())
+}
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn local_volume(_: &Path) -> Result<()> {
+    Err("Local volume checks are currently supported on macOS only".into())
 }
 #[cfg(target_os = "macos")]
 fn no_download() -> Result<()> {

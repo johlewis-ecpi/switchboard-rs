@@ -200,3 +200,108 @@ pub fn place_preview(window: &tao::window::Window) {
         origin.y + (size.height as i32 - outer.height as i32) / 2,
     ));
 }
+
+/// Position a passive tooltip using the display under its anchor, not its owner bounds.
+#[cfg(target_os = "macos")]
+pub fn place_hover(
+    owner: &tao::window::Window,
+    popup: &tao::window::Window,
+    anchor: [f64; 2],
+    height: f64,
+) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSScreen, NSWindow};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use tao::platform::macos::WindowExtMacOS;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let owner = unsafe { &*(owner.ns_window() as *const NSWindow) };
+    let Some(content) = owner.contentView() else {
+        return;
+    };
+    let point = owner.convertPointToScreen(NSPoint::new(
+        anchor[0],
+        content.bounds().size.height - anchor[1],
+    ));
+    let screens = NSScreen::screens(mtm);
+    let Some(screen) = screens
+        .iter()
+        .find(|screen| {
+            let r = screen.frame();
+            point.x >= r.origin.x
+                && point.x < r.origin.x + r.size.width
+                && point.y >= r.origin.y
+                && point.y < r.origin.y + r.size.height
+        })
+        .or_else(|| screens.firstObject())
+    else {
+        return;
+    };
+    let r = screen.visibleFrame();
+    let [x, y, width, height] = crate::hover_popup::popup_frame(
+        [
+            r.origin.x,
+            -r.origin.y - r.size.height,
+            r.size.width,
+            r.size.height,
+        ],
+        [point.x, -point.y],
+        [400., height],
+    );
+    let native = unsafe { &*(popup.ns_window() as *const NSWindow) };
+    native.setHasShadow(true);
+    native.setFrame_display(
+        NSRect::new(NSPoint::new(x, -y - height), NSSize::new(width, height)),
+        true,
+    );
+    // tao's set_visible(true) makes a window key on macOS. A hover must not do so.
+    native.orderFront(None);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn place_hover(
+    owner: &tao::window::Window,
+    popup: &tao::window::Window,
+    anchor: [f64; 2],
+    height: f64,
+) {
+    use tao::dpi::{PhysicalPosition, PhysicalSize};
+    let Ok(origin) = owner.inner_position() else {
+        return;
+    };
+    let scale = owner.scale_factor();
+    let point = [
+        origin.x as f64 + anchor[0] * scale,
+        origin.y as f64 + anchor[1] * scale,
+    ];
+    let Some(screen) = owner
+        .available_monitors()
+        .find(|screen| {
+            let origin = screen.position();
+            let size = screen.size();
+            point[0] >= origin.x as f64
+                && point[0] < origin.x as f64 + size.width as f64
+                && point[1] >= origin.y as f64
+                && point[1] < origin.y as f64 + size.height as f64
+        })
+        .or_else(|| owner.primary_monitor())
+    else {
+        return;
+    };
+    let origin = screen.position();
+    let size = screen.size();
+    let [x, y, width, height] = crate::hover_popup::popup_frame(
+        [
+            origin.x as f64,
+            origin.y as f64,
+            size.width as f64,
+            size.height as f64,
+        ],
+        point,
+        [400. * screen.scale_factor(), height * screen.scale_factor()],
+    );
+    popup.set_inner_size(PhysicalSize::new(width as u32, height as u32));
+    popup.set_outer_position(PhysicalPosition::new(x as i32, y as i32));
+    popup.set_visible(true);
+}
