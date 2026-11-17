@@ -3,3 +3,21 @@
 /output
 /.playwright-mcp
 .DS_Store
+
+# Secrets and credentials
+.env
+.env.*
+*.env
+!.env.example
+*secret*
+*credential*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local tooling / data
+/.claude/
+/data/
+*.sqlite
+*.db
